@@ -1,0 +1,24 @@
+name: WispByte Keep-Alive
+
+on:
+  schedule:
+    # 每30分钟运行一次
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping WispByte Server
+        run: |
+          echo "正在 ping WispByte 服务器..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 http://93.115.101.110:9918 || echo "000")
+          if [ "$response" = "200" ]; then
+            echo "✅ 服务器在线 (HTTP $response)"
+          elif [ "$response" = "000" ]; then
+            echo "⚠️ 连接超时，服务器可能休眠中，已触发唤醒请求"
+          else
+            echo "⚠️ 服务器返回 HTTP $response"
+          fi
+          echo "Ping 完成: $(date)"
