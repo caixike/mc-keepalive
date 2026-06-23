@@ -1,0 +1,28 @@
+name: FreeMCHost xike Keepalive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run keepalive check (FreeMCHost xike)
+        env:
+          SERVER_HOST: nd6.hn21.xyz
+          SERVER_PORT: "20358"
+        run: python keepalive.py
