@@ -1,18 +1,29 @@
-name: FreeMCHost Keepalive
+name: Rustix MC Keepalive
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
-  ping:
+  keepalive:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
 
     steps:
-      - name: Ping Minecraft Server
-        run: |
-          echo "Pinging nd6.hn21.xyz:20358..."
-          echo -ne "\xFE\x01" | nc -w 5 nd6.hn21.xyz 20358 && echo "Ping OK" || echo "Ping done"
-          echo "Keepalive executed at $(date)"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run keepalive check
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: python keepalive.py
