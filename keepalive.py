@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Rustix Minecraft 服务器保活/监控脚本
+Minecraft 服务器保活/监控脚本
 - 使用 mcstatus 发送官方状态请求（Handshake + Status Request）
 - 失败时回退到旧的 TCP 探测
-- 检测到服务器离线时自动通过 Rustix API 启动服务器
+- 检测到服务器离线时自动通过面板 API 启动服务器
 - 通过 Telegram Bot 发送通知
 - 由 GitHub Actions 每 10 分钟定时调用一次
 """
@@ -23,11 +23,11 @@ import json
 # ============================================================
 
 # Minecraft 服务器连接信息
-SERVER_HOST = os.environ.get("SERVER_HOST", "f1.rustix.me")
-SERVER_PORT = int(os.environ.get("SERVER_PORT", "37030"))
+SERVER_HOST = os.environ.get("SERVER_HOST", "")
+SERVER_PORT = int(os.environ.get("SERVER_PORT", "25565"))
 TIMEOUT = float(os.environ.get("TIMEOUT", "8"))
 
-# Rustix 面板 API 配置（通过 GitHub Secrets 传入，切勿硬编码）
+# 面板 API 配置（通过 GitHub Secrets 传入，切勿硬编码）
 RUSTIX_API_KEY = os.environ.get("RUSTIX_API_KEY", "")
 RUSTIX_SERVER_UUID = os.environ.get("RUSTIX_SERVER_UUID", "")
 
@@ -148,7 +148,12 @@ def ping_via_tcp() -> bool:
 # ============================================================
 
 def main() -> int:
-    log(f"=== Rustix 保活检测开始 | 目标: {SERVER_HOST}:{SERVER_PORT} ===")
+    # 检查必需配置
+    if not SERVER_HOST:
+        log("[ERROR] SERVER_HOST 未配置，请在 GitHub Secrets 中设置")
+        return 1
+
+    log(f"=== 保活检测开始 | 目标: {SERVER_HOST}:{SERVER_PORT} ===")
 
     # 1. 优先使用 mcstatus（完整握手+状态请求）
     if ping_via_mcstatus():
@@ -175,11 +180,11 @@ def main() -> int:
         f"⚠️ Minecraft 服务器离线\n"
         f"主机: {SERVER_HOST}:{SERVER_PORT}\n"
         f"时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-        f"正在尝试通过 Rustix API 自动启动…"
+        f"正在尝试通过 API 自动启动…"
     )
     send_telegram(alert_msg)
 
-    # 通过 Rustix API 自动启动服务器
+    # 通过 API 自动启动服务器
     if rustix_start_server():
         success_msg = (
             f"✅ 服务器启动命令已发送\n"
@@ -188,7 +193,7 @@ def main() -> int:
         )
         send_telegram(success_msg)
         log("=== 已通过 Rustix API 发送启动命令 ===")
-        return 0  # 发送成功不算脚本错误
+        return 0
     else:
         fail_msg = (
             f"❌ 自动启动失败，请手动处理\n"
