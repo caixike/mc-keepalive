@@ -1,0 +1,72 @@
+name: Rustix Keepalive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # 每 10 分钟执行一次
+  workflow_dispatch:  # 支持手动触发
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  SERVER_PORT: ${{ secrets.SERVER_PORT }}
+  RUSTIX_API_KEY: ${{ secrets.RUSTIX_API_KEY }}
+  RUSTIX_SERVER_UUID: ${{ secrets.RUSTIX_SERVER_UUID }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Rustix keepalive script
+        run: python keepalive.py
+
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    needs: keepalive
+
+    steps:
+      - name: Delete old workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          # 保留最近 7 天的 runs，最少保留 5 条
+          CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-7d +%Y-%m-%dT%H:%M:%SZ)
+          total=$(gh api "repos/$REPO/actions/runs?per_page=1" --jq '.total_count')
+          if [ "$total" -le 5 ]; then
+            echo "Only $total runs, skipping cleanup"
+            exit 0
+          fi
+          page=1
+          while true; do
+            runs=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$page" \
+              --jq ".workflow_runs[] | select(.created_at < \"$CUTOFF\") | .id")
+            if [ -z "$runs" ]; then
+              break
+            fi
+            for id in $runs; do
+              echo "Deleting run $id"
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" || true
+            done
+            page=$((page + 1))
+          done
+          echo "Cleanup complete"
