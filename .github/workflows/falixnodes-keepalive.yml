@@ -1,0 +1,65 @@
+name: "FalixNodes Keepalive"
+on:
+  schedule:
+    - cron: "*/8 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FALIXNODES_HOST: zhuoyidai.falixsrv.me
+      FALIXNODES_PORT: "25565"
+      STARTUP_WAIT_SECONDS: "90"
+      AUTO_RESTART: "true"
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Chrome & ChromeDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-chromedriver
+          sudo apt-get install -y google-chrome-stable || true
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install selenium webdriver-manager
+
+      - name: Run keepalive script
+        run: python falixnodes-keepalive.py
+
+  cleanup:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Cleanup old workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          cutoff=$(date -d '7 days ago' -u +%Y-%m-%dT%H:%M:%SZ)
+          runs=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$page" --jq '.workflow_runs[] | select(.created_at < "'"$cutoff"'") | .id' 2>/dev/null || true)
+          kept=0
+          total=$(echo "$runs" | wc -w)
+          for id in $runs; do
+            kept=$((kept + 1))
+            if [ $kept -le $((total - 5)) ]; then
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" 2>/dev/null || true
+            fi
+          done
+          echo "Cleanup completed"
