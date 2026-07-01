@@ -1,0 +1,66 @@
+name: Wispbyte MC Keepalive
+
+on:
+  schedule:
+    - cron: "*/8 * * * *"  # 每 8 分钟检测一次
+  workflow_dispatch:  # 支持手动触发
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  WISPBYTE_HOST: ${{ secrets.WISPBYTE_HOST }}
+  WISPBYTE_PORT: ${{ secrets.WISPBYTE_PORT }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install mcstatus
+
+      - name: Run keepalive check
+        env:
+          AUTO_RESTART: "false"
+          RUSTIX_API_KEY: ""
+          RUSTIX_SERVER_UUID: ""
+        run: python keepalive.py
+
+      - name: Clean up old workflow runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          CUTOFF=$(date -d "7 days ago" -u +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "Cleaning runs older than $CUTOFF..."
+          for page in $(seq 1 5); do
+            runs=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$page" \
+              --jq ".workflow_runs[] | select(.created_at < \"$CUTOFF\" and .workflow_id != ${{ github.run_id }}) | .id" 2>/dev/null) || true
+
+            if [ -z "$runs" ]; then
+              break
+            fi
+
+            for run_id in $runs; do
+              echo "Deleting run $run_id..."
+              gh api -X DELETE "repos/$REPO/actions/runs/$run_id" || true
+            done
+          done
+
+          echo "Cleanup complete."
