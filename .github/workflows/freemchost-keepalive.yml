@@ -1,0 +1,91 @@
+name: FreeMCHost Keepalive
+description: "FreeMCHost Minecraft server keepalive - mcstatus probe + Telegram notification"
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/8 * * * *"
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  FREEMCHOST_HOST: nd6.hn21.xyz
+  FREEMCHOST_PORT: "20358"
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install mcstatus requests
+
+      - name: Run keepalive script
+        env:
+          SERVER_HOST: ${{ env.FREEMCHOST_HOST }}
+          SERVER_PORT: ${{ env.FREEMCHOST_PORT }}
+          AUTO_RESTART: "false"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python freemchost-keepalive.py
+
+  cleanup-old-runs:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      actions: write
+    steps:
+      - name: Cleanup old workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const repo = context.repo;
+            const daysToKeep = 7;
+            const minRunsToKeep = 5;
+            const cutoff = new Date(Date.now() - daysToKeep * 24 * 60 * 60 * 1000);
+
+            let page = 1;
+            let deleted = 0;
+            let kept = 0;
+
+            while (true) {
+              const runs = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: repo.owner,
+                repo: repo.repo,
+                per_page: 100,
+                page: page
+              });
+
+              if (runs.data.workflow_runs.length === 0) break;
+
+              for (const run of runs.data.workflow_runs) {
+                if (run.status !== 'completed') continue;
+                if (new Date(run.created_at) > cutoff) { kept++; continue; }
+                if (kept < minRunsToKeep) { kept++; continue; }
+
+                try {
+                  await github.rest.actions.deleteWorkflowRun({
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    run_id: run.id
+                  });
+                  deleted++;
+                } catch (e) {
+                  console.log(`Skip run ${run.id}: ${e.message}`);
+                }
+              }
+              page++;
+            }
+            console.log(`Cleaned up ${deleted} old runs, kept ${kept}`);
