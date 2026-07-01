@@ -1,0 +1,62 @@
+name: MC Keepalive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run keepalive check
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          RUSTIX_API_KEY: ${{ secrets.RUSTIX_API_KEY }}
+          RUSTIX_SERVER_UUID: ${{ secrets.RUSTIX_SERVER_UUID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python keepalive.py
+
+      - name: Clean up old workflow runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          CURRENT_RUN_ID="${{ github.run_id }}"
+          echo "清理仓库 $REPO 中除当前运行 ($CURRENT_RUN_ID) 之外的所有运行记录..."
+
+          page=1
+          while true; do
+            runs=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$page" --jq '.workflow_runs[] | {id: .id}')
+            count=$(echo "$runs" | jq -s 'length')
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+            echo "$runs" | jq -r '.id' | while read run_id; do
+              if [ "$run_id" != "$CURRENT_RUN_ID" ]; then
+                echo "删除运行记录 ID: $run_id"
+                gh api -X DELETE "repos/$REPO/actions/runs/$run_id" --silent || echo "删除 $run_id 失败"
+              fi
+            done
+            page=$((page+1))
+          done
+          echo "清理完成"
