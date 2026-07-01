@@ -39,21 +39,23 @@ def send_telegram(message: str):
         "parse_mode": "HTML"
     }).encode("utf-8")
 
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=payload, headers={
+        "Content-Type": "application/json"
+    })
+
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            if result.get("ok"):
-                print("✅ Telegram notification sent successfully.")
+            if resp.status == 200:
+                print("✅ Telegram notification sent.")
             else:
-                print(f"❌ Telegram API error: {result}")
+                print(f"❌ Telegram error: {resp.status}")
     except Exception as e:
-        print(f"❌ Failed to send Telegram notification: {e}")
+        print(f"❌ Telegram request failed: {e}")
 
-# ─── Server Status Check ────────────────────────────────────────
+# ─── MC Status Check ─────────────────────────────────────────────
 
-def check_server_status() -> dict:
-    """Check MC server status using Java protocol via mcstatus."""
+def check_mc_status():
+    """Check if MC server is online using mcstatus protocol."""
     try:
         from mcstatus import JavaServer
         server = JavaServer.lookup(f"{MC_HOST}:{MC_PORT}")
@@ -63,18 +65,20 @@ def check_server_status() -> dict:
             "players_online": status.players.online,
             "players_max": status.players.max,
             "version": status.version.name,
-            "latency_ms": round(status.latency, 1),
-            "description": str(status.description) if status.description else ""
+            "latency": round(status.latency, 1)
         }
     except Exception as e:
-        print(f"❌ Server check failed: {e}")
-        return {"online": False, "error": str(e)}
+        print(f"❌ mcstatus check failed: {e}")
+        return {"online": False}
 
 # ─── Auto Restart via Selenium ───────────────────────────────────
 
-def restart_server_selenium() -> bool:
-    """Restart server via FalixNodes Remote Startup page using Selenium."""
-    print(f"🔄 Attempting restart via Remote Startup: {FALIXNODES_START_URL}")
+def auto_restart():
+    """Use Selenium to visit Remote Startup page and click the start button."""
+    if not AUTO_RESTART:
+        print("⚠️ AUTO_RESTART is disabled, skipping.")
+        return False
+
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
@@ -82,139 +86,156 @@ def restart_server_selenium() -> bool:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
-        from webdriver_manager.chrome import ChromeDriverManager
 
-        options = Options()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        print(f"🌐 Navigating to Remote Startup page: {FALIXNODES_START_URL}")
 
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(30)
+        chrome_options = Options()
+        chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option("useAutomationExtension", False)
+        chrome_options.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
 
         try:
-            # Navigate to Remote Startup page
             driver.get(FALIXNODES_START_URL)
-            print("📄 Remote Startup page loaded.")
+            print("📄 Page loaded, looking for start button...")
+
+            # Wait for the start button to appear
+            wait = WebDriverWait(driver, 15)
+            start_btn = wait.until(EC.element_to_be_clickable((By.XPATH,
+                "//button[contains(text(), '启动服务器') or contains(text(), 'Start Server')]"
+            )))
+
+            print("🖱️ Found start button, clicking...")
+            start_btn.click()
+
+            # Wait a moment for the action to process
             time.sleep(3)
 
-            # Find and click the start button
-            start_button = WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit'], input[type='submit'], button.btn"))
-            )
-            start_button.click()
-            print("✅ Start button clicked.")
-            time.sleep(3)
+            # Check if we got redirected to queue page
+            current_url = driver.current_url
+            print(f"📍 Current URL after click: {current_url}")
 
-            # Check for success message
-            page_text = driver.find_element(By.TAG_NAME, "body").text
-            if "started" in page_text.lower() or "success" in page_text.lower() or "queue" in page_text.lower():
-                print("✅ Restart command sent successfully.")
+            if "queue" in current_url.lower() or "server" in current_url.lower():
+                print("✅ Server startup request sent successfully!")
                 return True
             else:
-                print(f"⚠️ Page content after click: {page_text[:200]}")
-                return True  # Assume success if no explicit error
+                print("⚠️ Button clicked but status unclear, checking page content...")
+                # Try to find queue indicator
+                page_source = driver.page_source
+                if "queue" in page_source.lower() or "启动" in page_source.lower():
+                    print("✅ Queue page detected, startup request likely successful.")
+                    return True
+                else:
+                    print("⚠️ Could not confirm startup success.")
+                    return False
 
         finally:
             driver.quit()
 
-    except ImportError as e:
-        print(f"❌ Selenium/Chrome not available: {e}")
+    except ImportError:
+        print("❌ Selenium not installed. Run: pip install selenium")
         return False
     except Exception as e:
-        print(f"❌ Restart failed: {e}")
+        print(f"❌ Auto-restart failed: {e}")
         return False
 
 # ─── Main Logic ──────────────────────────────────────────────────
 
 def main():
-    print(f"🚀 [{SERVER_NAME}] Keepalive script started")
-    print(f"   MC Server: {MC_HOST}:{MC_PORT}")
-    print(f"   Auto Restart: {AUTO_RESTART}")
-    print(f"   Startup URL: {FALIXNODES_START_URL}")
+    print(f"🚀 {SERVER_NAME} Keepalive Script")
+    print(f"📍 Server: {MC_HOST}:{MC_PORT}")
+    print(f"🔗 Startup URL: {FALIXNODES_START_URL}")
+    print(f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
-    # Step 1: Check server status
-    status = check_server_status()
+    # Step 1: Check MC server status
+    print("📡 Checking server status...")
+    status = check_mc_status()
 
-    if status.get("online"):
-        # Server is online - send success notification
+    if status["online"]:
+        # Server is online - keepalive success
         msg = (
-            f"🟢 <b>[{SERVER_NAME}] 服务器在线</b>\n"
-            f"📡 地址: <code>{MC_HOST}:{MC_PORT}</code>\n"
+            f"🟢 <b>{SERVER_NAME} [{MC_HOST}] 保活成功</b>\n\n"
+            f"📅 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"📊 状态: ✅ 运行中\n"
             f"👥 玩家: {status['players_online']}/{status['players_max']}\n"
-            f"📦 版本: {status['version']}\n"
-            f"📶 延迟: {status['latency_ms']}ms"
+            f"🏷️ 版本: {status['version']}\n"
+            f"⚡ 延迟: {status['latency']}ms\n"
+            f"🌐 地址: {MC_HOST}:{MC_PORT}\n\n"
+            f"✅ 保活操作已完成"
         )
-        print(f"✅ Server is ONLINE | Players: {status['players_online']}/{status['players_max']} | Latency: {status['latency_ms']}ms")
+        print(msg)
         send_telegram(msg)
+        print("\n✅ Done!")
         sys.exit(0)
-    else:
-        # Server is offline
-        error_msg = status.get("error", "Unknown error")
-        print(f"❌ Server is OFFLINE | Error: {error_msg}")
 
-        if not AUTO_RESTART:
-            msg = (
-                f"🔴 <b>[{SERVER_NAME}] 服务器离线</b>\n"
-                f"📡 地址: <code>{MC_HOST}:{MC_PORT}</code>\n"
-                f"❌ 错误: {error_msg}\n"
-                f"⚠️ 自动重启已关闭，请手动启动。"
-            )
-            send_telegram(msg)
-            sys.exit(1)
+    # Step 2: Server is offline - attempt restart
+    print("⚠️ Server is OFFLINE. Attempting restart...")
+    restart_success = auto_restart()
 
-        # Step 2: Attempt restart
-        msg_restarting = (
-            f"🟡 <b>[{SERVER_NAME}] 服务器离线，正在尝试重启...</b>\n"
-            f"📡 地址: <code>{MC_HOST}:{MC_PORT}</code>\n"
-            f"⏳ 等待 {STARTUP_WAIT_SECONDS} 秒后确认状态..."
-        )
-        send_telegram(msg_restarting)
-
-        restart_success = restart_server_selenium()
-
-        if not restart_success:
-            msg_fail = (
-                f"🔴 <b>[{SERVER_NAME}] 重启失败</b>\n"
-                f"📡 地址: <code>{MC_HOST}:{MC_PORT}</code>\n"
-                f"❌ 无法通过 Remote Startup 启动服务器。\n"
-                f"⚠️ 请手动启动服务器。"
-            )
-            send_telegram(msg_fail)
-            sys.exit(1)
-
-        # Step 3: Wait and verify
-        print(f"⏳ Waiting {STARTUP_WAIT_SECONDS} seconds for server to start...")
+    if restart_success:
+        # Wait for server to start
+        print(f"\n⏳ Waiting {STARTUP_WAIT_SECONDS}s for server to boot...")
         time.sleep(STARTUP_WAIT_SECONDS)
 
-        final_status = check_server_status()
+        # Verify restart
+        print("📡 Verifying server status...")
+        verify_status = check_mc_status()
 
-        if final_status.get("online"):
-            msg_success = (
-                f"🟢 <b>[{SERVER_NAME}] 重启成功！</b>\n"
-                f"📡 地址: <code>{MC_HOST}:{MC_PORT}</code>\n"
-                f"👥 玩家: {final_status['players_online']}/{final_status['players_max']}\n"
-                f"📦 版本: {final_status['version']}\n"
-                f"📶 延迟: {final_status['latency_ms']}ms"
+        if verify_status["online"]:
+            msg = (
+                f"🟢 <b>{SERVER_NAME} [{MC_HOST}] 重启成功</b>\n\n"
+                f"📅 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"📊 状态: ✅ 已重启并运行中\n"
+                f"👥 玩家: {verify_status['players_online']}/{verify_status['players_max']}\n"
+                f"🏷️ 版本: {verify_status['version']}\n"
+                f"⚡ 延迟: {verify_status['latency']}ms\n"
+                f"🌐 地址: {MC_HOST}:{MC_PORT}\n\n"
+                f"🔄 服务器已成功重启"
             )
-            print(f"✅ Server is back ONLINE after restart!")
-            send_telegram(msg_success)
-            sys.exit(0)
+            print(msg)
+            send_telegram(msg)
         else:
-            msg_still_down = (
-                f"🔴 <b>[{SERVER_NAME}] 重启后仍然离线</b>\n"
-                f"📡 地址: <code>{MC_HOST}:{MC_PORT}</code>\n"
-                f"❌ 错误: {final_status.get('error', 'Unknown')}\n"
-                f"⚠️ 服务器可能正在队列中排队，请稍后检查。"
+            msg = (
+                f"🟡 <b>{SERVER_NAME} [{MC_HOST}] 重启请求已发送</b>\n\n"
+                f"📅 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"📊 状态: ⏳ 排队中或启动中\n"
+                f"🌐 地址: {MC_HOST}:{MC_PORT}\n"
+                f"🔗 启动链接: {FALIXNODES_START_URL}\n\n"
+                f"⏳ 启动请求已发送，服务器可能正在排队等待\n"
+                f"👉 请稍后手动检查服务器状态"
             )
-            print(f"❌ Server still OFFLINE after restart attempt.")
-            send_telegram(msg_still_down)
-            sys.exit(1)
+            print(msg)
+            send_telegram(msg)
+    else:
+        # Auto-restart failed
+        msg = (
+            f"🔴 <b>{SERVER_NAME} [{MC_HOST}] 服务器离线</b>\n\n"
+            f"📅 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"📊 状态: ❌ 已停止\n"
+            f"🌐 地址: {MC_HOST}:{MC_PORT}\n"
+            f"🔄 自动重启: ❌ 失败\n\n"
+            f"👉 请手动启动服务器:\n"
+            f"🔗 {FALIXNODES_START_URL}"
+        )
+        print(msg)
+        send_telegram(msg)
+
+    print("\n✅ Done!")
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
